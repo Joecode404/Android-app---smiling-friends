@@ -1,0 +1,1708 @@
+package com.example.breathwithme2
+
+import android.os.Bundle
+import android.content.Intent
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.*
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlin.random.Random
+import androidx.compose.foundation.Image
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.clickable
+import kotlin.math.roundToInt
+import androidx.compose.ui.layout.ContentScale
+import kotlin.math.cos
+import kotlin.math.sin
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.unit.Dp
+import androidx.compose.foundation.background
+import androidx.compose.ui.graphics.Color
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.Alignment
+
+
+// ---------- SPLASH SCREEN ----------
+class SplashActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            SplashScreen {
+                startActivity(Intent(this, MainActivity::class.java))
+                finish()
+            }
+        }
+    }
+}
+
+@Composable
+fun SplashScreen(onSplashFinished: () -> Unit) {
+    val infiniteTransition = rememberInfiniteTransition()
+    val emojiOffset by infiniteTransition.animateFloat(
+        initialValue = 0f, targetValue = 20f,
+        animationSpec = infiniteRepeatable(animation = tween(600, easing = LinearEasing), repeatMode = RepeatMode.Reverse),
+        label = ""
+    )
+    val middleOffset by infiniteTransition.animateFloat(
+        initialValue = 0f, targetValue = 10f,
+        animationSpec = infiniteRepeatable(animation = tween(800, easing = LinearEasing), repeatMode = RepeatMode.Reverse),
+        label = ""
+    )
+    LaunchedEffect(Unit) { delay(3000); onSplashFinished() }
+
+    Surface(modifier = Modifier.fillMaxSize(), color = Color.White) {
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Image(painter = painterResource(id = R.drawable.mindful_moments), contentDescription = "App Logo", modifier = Modifier.size(150.dp))
+            Spacer(modifier = Modifier.height(16.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Loading ", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("😊", modifier = Modifier.offset(y = emojiOffset.dp), fontSize = 20.sp)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("😔", modifier = Modifier.offset(y = -emojiOffset.dp), fontSize = 20.sp)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("😐", modifier = Modifier.offset(y = middleOffset.dp), fontSize = 20.sp)
+            }
+        }
+    }
+}
+
+// ---------- STICKER MODELS & HELPERS ----------
+enum class Rarity(val displayName: String, val color: Color) {
+    COMMON("Common", Color.LightGray),
+    RARE("Rare", Color(0xFF6EC6FF)),
+    EPIC("Epic", Color(0xFFFF6ECF))
+}
+
+data class Sticker(val emoji: String, val rarity: Rarity)
+
+// Generate a sticker for a given game key (breathing / doodle / memory)
+fun generateStickerForGame(gameKey: String): Sticker {
+    // Rarity probability: Common 72%, Rare 23%, Epic 5%
+    val roll = Random.nextInt(100)
+    val rarity = when {
+        roll < 72 -> Rarity.COMMON
+        roll < 95 -> Rarity.RARE
+        else -> Rarity.EPIC
+    }
+
+    val emoji = when (gameKey) {
+        "breathing" -> listOf("🌬️", "💨", "🍃").random()
+        "doodle" -> listOf("🎨", "🖌️", "🖍️").random()
+        "memory" -> listOf("🧠", "🧩", "🔮").random()
+        else -> listOf("⭐", "✨").random()
+    }
+
+    return Sticker(emoji, rarity)
+}
+
+// ---------- MAIN ACTIVITY ----------
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            AppRoot()
+        }
+    }
+}
+
+// ---------- APP ROOT (full navigation + sticker collection) ----------
+@Composable
+fun AppRoot() {
+    // screen strings kept for compatibility with most of your existing code
+    var screen by remember { mutableStateOf("welcome") }
+    var playAll by remember { mutableStateOf(false) }
+    var playAllIndex by remember { mutableStateOf(0) }
+    var darkMode by remember { mutableStateOf(false) }
+    var feedbackText by remember { mutableStateOf("") }
+    var feedbackResetKey by remember { mutableStateOf(0) }
+
+    // Sticker collection (in-memory, resets when app restarts)
+    val stickerCollection = remember { mutableStateListOf<Sticker>() }
+
+    fun startSingleGame(target: String) {
+        playAll = false
+        playAllIndex = 0
+        screen = target
+    }
+
+    fun startPlayAll() {
+        playAll = true
+        playAllIndex = 0
+        screen = "breathing"
+    }
+
+    // Called whenever a single game finishes (adds a sticker based on current screen)
+    fun onGameFinishedAddStickerAndProceed() {
+        // award sticker based on which game was finished
+        val awarded = when (screen) {
+            "breathing" -> generateStickerForGame("breathing")
+            "doodle" -> generateStickerForGame("doodle")
+            "memory" -> generateStickerForGame("memory")
+            else -> generateStickerForGame("misc")
+        }
+        stickerCollection.add(awarded)
+
+        // navigation / playAll flow
+        if (playAll) {
+            playAllIndex++
+            screen = when (playAllIndex) {
+                1 -> "doodle"
+                2 -> "memory"
+                else -> { playAll = false; playAllIndex = 0; "feedback" }
+            }
+        } else {
+            screen = "feedback"
+        }
+    }
+
+    // If feedback submitted, go to congrats screen (no sticker awarded there)
+    fun onFeedbackSubmitted() {
+        screen = "congrats"
+    }
+
+    when (screen) {
+        // ---------- Welcome Screen ----------
+        "welcome" -> WelcomeScreen(
+            onStart = { screen = "mood" },
+            onOpenSettings = { screen = "settings" },
+            darkMode = darkMode
+        )
+
+        // ---------- Mood Screen ----------
+        "mood" -> MoodTodayScreen(
+            onContinue = { screen = "games" },
+            darkMode = darkMode
+        )
+
+        // ---------- Games Menu ----------
+        "games" -> GamesMenuScreen(
+            onBreathing = { startSingleGame("breathing") },
+            onDoodle = { startSingleGame("doodle") },
+            onReflection = { startSingleGame("memory") },
+            onPlayAll = { startPlayAll() },
+            darkMode = darkMode
+        )
+
+        // ---------- Breathing ----------
+        "breathing" -> BreathingScreen(
+            playAll = playAll,
+            onNext = { onGameFinishedAddStickerAndProceed() },
+            darkMode = darkMode,
+            onBack = { screen = if (playAll) "games" else "games" }
+        )
+
+        // ---------- Doodle ----------
+        "doodle" -> DoodleScreen(
+            playAll = playAll,
+            onNext = { onGameFinishedAddStickerAndProceed() },
+            darkMode = darkMode,
+            onBack = { screen = if (playAll) "breathing" else "games" }
+        )
+
+        // ---------- Memory ----------
+        "memory" -> MemoryGameScreen(
+            darkMode = darkMode,
+            onNext = { onGameFinishedAddStickerAndProceed() },
+            onBack = { screen = if (playAll) "doodle" else "games" }
+        )
+
+        // ---------- Feedback ----------
+        "feedback" -> FeedbackField(
+            feedbackText = feedbackText,
+            onFeedbackChange = { feedbackText = it },
+            darkMode = darkMode,
+            onSubmit = {
+                onFeedbackSubmitted()
+
+                // Clear text
+                feedbackText = ""
+
+                // Force internal state reset in FeedbackField
+                feedbackResetKey++
+
+                // Navigate to next screen
+                screen = "congrats"
+            },
+            onBack = { screen = "games" },
+            resetKey = feedbackResetKey
+        )
+
+        // ---------- Congratulations ----------
+        "congrats" -> CongratulationsScreen(
+            onBackToStart = {
+                screen = "welcome"
+                stickerCollection.clear() // optional: clear progress when returning home
+            },
+            onOpenStickerBook = { screen = "stickerbook" },
+            darkMode = darkMode,
+            stickers = stickerCollection.toList()
+        )
+
+        // ---------- Sticker Book ----------
+        "stickerbook" -> StickerBookScreen(
+            allStickers = stickerCollection.toList(),
+            onBack = { screen = "congrats" },
+            darkMode = darkMode
+        )
+
+        // ---------- Settings ----------
+        "settings" -> SettingsScreen(
+            darkMode = darkMode,
+            onToggleDarkMode = { darkMode = !darkMode },
+            onBack = { screen = "welcome" }
+        )
+    }
+}
+
+// ---------- WELCOME SCREEN ----------
+@Composable
+fun WelcomeScreen(
+    onStart: () -> Unit,
+    onOpenSettings: () -> Unit,
+    darkMode: Boolean
+) {
+    val bgColor = if (darkMode) Color(0xFF3A3A5E) else Color(0xFFFFF0F5) // pastel dark/light
+    val txtColor = if (darkMode) Color(0xFFFDF6F0) else Color(0xFF3E3E3E) // soft pastel text
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(bgColor) // use solid pastel color
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                "Welcome to Mindful Moments 🌈",
+                fontSize = 32.sp,
+                color = txtColor,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Button(
+                onClick = onStart,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (darkMode) Color(0xFF6A5ACD) else Color(0xFFFFD1DC)
+                ),
+                modifier = Modifier
+                    .fillMaxWidth(0.7f)
+                    .height(64.dp),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text("Start 🌟", fontSize = 20.sp, color = Color.Black)
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Button(
+                onClick = onOpenSettings,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (darkMode) Color(0xFF6A5ACD) else Color(0xFFFFD1DC)
+                ),
+                modifier = Modifier
+                    .fillMaxWidth(0.7f)
+                    .height(50.dp),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text("Settings ⚙️", fontSize = 18.sp, color = Color.Black)
+            }
+        }
+    }
+}
+
+
+
+// ---------- MOOD TODAY SCREEN ----------
+@Composable
+fun MoodTodayScreen(
+    onContinue: () -> Unit,
+    darkMode: Boolean
+) {
+    val bgColor = if (darkMode) Color(0xFF3A3A5E) else Color(0xFFFFF0F5)
+    val txtColor = if (darkMode) Color(0xFFFDF6F0) else Color(0xFF3E3E3E)
+
+    // Define mood colors
+    val moodColors = mapOf(
+        "😊 Happy" to Color(0xFF4CAF50),  // Green
+        "😐 Okay" to Color(0xFFFFC107),   // Amber
+        "😔 Sad" to Color(0xFFF44336)     // Red
+    )
+
+    Surface(
+        modifier = Modifier.fillMaxSize().background(bgColor),
+        color = Color.Transparent
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(28.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                "How are you feeling today?",
+                fontSize = 28.sp,
+                color = txtColor,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center
+            )
+
+            Spacer(modifier = Modifier.height(36.dp))
+
+            val moods = listOf("😊 Happy", "😐 Okay", "😔 Sad")
+
+            moods.forEach { mood ->
+                Button(
+                    onClick = onContinue,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = moodColors[mood] ?: Color.Gray
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(80.dp)
+                        .padding(vertical = 8.dp),
+                    shape = RoundedCornerShape(20.dp)
+                ) {
+                    Text(mood, fontSize = 20.sp, color = Color.Black)
+                }
+            }
+        }
+    }
+}
+
+
+
+
+// ---------- GAMES MENU SCREEN ----------
+@Composable
+fun GamesMenuScreen(
+    onBreathing: () -> Unit,
+    onDoodle: () -> Unit,
+    onReflection: () -> Unit,
+    onPlayAll: () -> Unit,
+    darkMode: Boolean
+) {
+    val bgColor = if (darkMode) Color(0xFF3A3A5E) else Color(0xFFFFF0F5)
+    val txtColor = if (darkMode) Color(0xFFFDF6F0) else Color(0xFF3E3E3E)
+    val buttonColor = if (darkMode) Color(0xFF6A5ACD) else Color(0xFFFFD1DC)
+
+    Surface(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(bgColor),
+        color = Color.Transparent
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(28.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+
+            Text(
+                "Mindful Moments 🌈",
+                fontSize = 32.sp,
+                color = txtColor,
+                fontWeight = FontWeight.Bold
+            )
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            Text(
+                "Pick a game or press Play All to do them in order",
+                color = txtColor,
+                fontSize = 16.sp,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(bottom = 20.dp)
+            )
+
+            // BUTTONS
+            Button(
+                onClick = onBreathing,
+                colors = ButtonDefaults.buttonColors(containerColor = buttonColor),
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text("🌬️ Breathing Calm", fontSize = 18.sp, color = Color.Black)
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Button(
+                onClick = onDoodle,
+                colors = ButtonDefaults.buttonColors(containerColor = buttonColor),
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text("🎨 Doodle Fun", fontSize = 18.sp, color = Color.Black)
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Button(
+                onClick = onReflection,
+                colors = ButtonDefaults.buttonColors(containerColor = buttonColor),
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text("🧠 Memory Game", fontSize = 18.sp, color = Color.Black)
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            Button(
+                onClick = onPlayAll,
+                colors = ButtonDefaults.buttonColors(containerColor = buttonColor),
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text("🌟 Play All", fontSize = 18.sp, color = Color.Black)
+            }
+        }
+    }
+}
+
+
+
+// ---------- BREATHING SCREEN ----------
+@Composable
+fun BreathingScreen(
+    playAll: Boolean,
+    onNext: () -> Unit,
+    darkMode: Boolean,
+    onBack: () -> Unit
+) {
+    var isRunning by remember { mutableStateOf(false) }
+    var phase by remember { mutableStateOf("Tap Anywhere to Start") }
+    var scale by remember { mutableStateOf(1f) }
+
+    // Unified background colors (matches other screens)
+    val baseBg = if (darkMode) Color(0xFF3A3A5E) else Color(0xFFFFF8F0)
+
+    var bgColor by remember { mutableStateOf(baseBg) }
+    var roundCount by remember { mutableStateOf(0) }
+
+    val animatedScale by animateFloatAsState(
+        targetValue = scale,
+        animationSpec = tween(3000),
+        label = ""
+    )
+
+    val animatedColor by animateColorAsState(
+        targetValue = bgColor,
+        animationSpec = tween(3000),
+        label = ""
+    )
+
+    // Breathing cycle colors (pastel & dark harmonized)
+    val inhaleColor = if (darkMode) Color(0xFF4E4E80) else Color(0xFFE0F7FA)
+    val holdColor = if (darkMode) Color(0xFF5C5C91) else Color(0xFFFFF3B0)
+    val exhaleColor = if (darkMode) Color(0xFF3A3A5E) else Color(0xFFFFD1DC)
+
+    // Text colors to match all other screens
+    val textColor = if (darkMode) Color(0xFFFDF6F0) else Color(0xFF3E3E3E)
+
+    // Breathing animation loop
+    LaunchedEffect(isRunning) {
+        if (isRunning) {
+            roundCount = 0
+            while (isActive && roundCount < 3) {
+
+                phase = "Breathe in..."
+                scale = 1.8f
+                bgColor = inhaleColor
+                delay(3000)
+
+                phase = "Hold..."
+                bgColor = holdColor
+                delay(2000)
+
+                phase = "Breathe out..."
+                scale = 1f
+                bgColor = exhaleColor
+                delay(3000)
+
+                phase = "Rest..."
+                bgColor = baseBg
+                delay(2000)
+
+                roundCount++
+            }
+
+            isRunning = false
+            onNext()
+        } else {
+            phase = "Tap Anywhere to Start"
+            scale = 1f
+            bgColor = baseBg
+        }
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(animatedColor)
+            .clickable { if (!isRunning) isRunning = true },
+        color = Color.Transparent
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(28.dp),
+            verticalArrangement = Arrangement.SpaceEvenly,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+
+            // Title
+            Text(
+                "Let's take calm breaths 🌬️",
+                color = textColor,
+                fontSize = 26.sp,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center
+            )
+
+            // Animated Circle
+            Box(
+                modifier = Modifier
+                    .size(180.dp)
+                    .scale(animatedScale)
+                    .background(
+                        color = if (darkMode) Color(0xFF6A5ACD) else Color(0xFFFFD1DC),
+                        shape = CircleShape
+                    )
+            )
+
+            // Breathing phase text
+            Text(
+                phase,
+                color = textColor,
+                fontSize = 28.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+
+            // Back + Next buttons
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+
+                Button(
+                    onClick = onBack,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (darkMode) Color(0xFF6A6A80) else Color(0xFFE0E0E0)
+                    ),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Text("◀️ Back", color = Color.Black)
+                }
+
+                Button(
+                    onClick = onNext,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (darkMode) Color(0xFF6A5ACD) else Color(0xFFFFD1DC)
+                    ),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Text("Next →", color = Color.Black)
+                }
+            }
+        }
+    }
+}
+
+
+
+// ---------- DOODLE SCREEN ----------
+@Composable
+fun DoodleScreen(
+    playAll: Boolean,
+    onNext: () -> Unit,
+    darkMode: Boolean,
+    onBack: () -> Unit
+) {
+    val doodlePrompts = listOf(
+        "Draw a rainbow 🌈","Draw your pet 🐶","Draw your family 👨‍👩‍👧‍👦",
+        "Draw something that makes you smile 😀","Draw your favorite place 🏖️",
+        "Draw your best friend 💕","Draw a happy sun ☀️","Draw your dream house 🏠"
+    )
+
+    var currentPrompt by remember { mutableStateOf(doodlePrompts.random()) }
+    var paths by remember { mutableStateOf(listOf<Pair<List<Offset>, Color>>()) }
+    var currentPath by remember { mutableStateOf(listOf<Offset>()) }
+    var currentColor by remember { mutableStateOf(Color(0xFF81D4FA)) } // default pastel blue
+
+    // ---- Theme-consistent colors ----
+    val bgColor = if (darkMode) Color(0xFF3A3A5E) else Color(0xFFFFF0F5)
+    val textColor = if (darkMode) Color(0xFFFDF6F0) else Color(0xFF3E3E3E)
+    val borderSelected = if (darkMode) Color(0xFFFDF6F0) else Color(0xFF3E3E3E)
+    val borderDefault = if (darkMode) Color(0xFF8A8AB2) else Color.Gray
+    val buttonPrimary = if (darkMode) Color(0xFF6A5ACD) else Color(0xFFFFD1DC)
+    val buttonSecondary = if (darkMode) Color(0xFF6A6A80) else Color(0xFFE0E0E0)
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = bgColor
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(currentColor) {
+                    detectDragGestures(
+                        onDragStart = { offset -> currentPath = listOf(offset) },
+                        onDrag = { change, _ -> currentPath = currentPath + change.position },
+                        onDragEnd = {
+                            paths = paths + listOf(currentPath to currentColor)
+                            currentPath = emptyList()
+                        }
+                    )
+                }
+        ) {
+
+            // DRAWING CANVAS
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                paths.forEach { (pathPoints, color) ->
+                    val path = Path().apply {
+                        if (pathPoints.isNotEmpty())
+                            moveTo(pathPoints.first().x, pathPoints.first().y)
+                        for (p in pathPoints.drop(1)) lineTo(p.x, p.y)
+                    }
+                    drawPath(
+                        path = path,
+                        color = color,
+                        style = Stroke(10f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                    )
+                }
+
+                val currentDrawingPath = Path().apply {
+                    if (currentPath.isNotEmpty())
+                        moveTo(currentPath.first().x, currentPath.first().y)
+                    for (p in currentPath.drop(1)) lineTo(p.x, p.y)
+                }
+
+                drawPath(
+                    path = currentDrawingPath,
+                    color = currentColor,
+                    style = Stroke(10f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                )
+            }
+
+            // UI Overlay
+            Column(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+
+                Text(
+                    "Doodle Time 🎨",
+                    color = textColor,
+                    fontSize = 26.sp,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    currentPrompt,
+                    color = textColor,
+                    fontSize = 18.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(bottom = 12.dp)
+                )
+
+                // COLOR PICKER
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    val colors = listOf(
+                        Color(0xFFFFB3B3), // pastel red
+                        Color(0xFFFFF59D), // pastel yellow
+                        Color(0xFFA5D6A7), // pastel green
+                        Color(0xFF81D4FA), // pastel blue
+                        Color(0xFFE1BEE7)  // pastel purple
+                    )
+
+                    colors.forEach { color ->
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .background(color, CircleShape)
+                                .border(
+                                    if (currentColor == color) 3.dp else 1.dp,
+                                    if (currentColor == color) borderSelected else borderDefault,
+                                    CircleShape
+                                )
+                                .clickable { currentColor = color }
+                        )
+                    }
+
+                    // ERASER
+                    Button(
+                        onClick = { currentColor = bgColor },
+                        colors = ButtonDefaults.buttonColors(containerColor = bgColor),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Eraser 🩹", color = textColor)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // ACTION BUTTONS
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+
+                    Button(
+                        onClick = { currentPrompt = doodlePrompts.random() },
+                        colors = ButtonDefaults.buttonColors(containerColor = buttonPrimary),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Text("New Idea 💡", color = Color.Black)
+                    }
+
+                    Button(
+                        onClick = { paths = emptyList() },
+                        colors = ButtonDefaults.buttonColors(containerColor = buttonSecondary),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Text("Clear", color = Color.Black)
+                    }
+
+                    Button(
+                        onClick = onNext,
+                        colors = ButtonDefaults.buttonColors(containerColor = buttonPrimary),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Text("Next →", color = Color.Black)
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+// Memory Game //
+data class MemoryCard(
+    val emoji: String,
+    val isFaceUp: Boolean = false,
+    val isMatched: Boolean = false
+)
+
+@Composable
+fun MemoryGameScreen(
+    darkMode: Boolean,
+    onNext: () -> Unit,
+    onBack: () -> Unit
+) {
+    val emojis = listOf("🌸","🌞","🌙","🌈","🍀","☁️","🌊","🍎","⭐")
+    val pairEmojis = emojis.shuffled().take(4)
+    val oddEmoji = (emojis - pairEmojis).random()
+    val cardList = (pairEmojis + pairEmojis + listOf(oddEmoji)).shuffled()
+
+    var cards by remember { mutableStateOf(cardList.map { MemoryCard(it) }) }
+    var firstCardIndex by remember { mutableStateOf<Int?>(null) }
+    var secondCardIndex by remember { mutableStateOf<Int?>(null) }
+    var cardsToFlipBack by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+
+    // --- Colors ---
+    val backgroundColor = if (darkMode) Color(0xFF3A3A5E) else Color(0xFFFFF0F5)
+    val cardBackColor = if (darkMode) Color(0xFF6A5ACD) else Color(0xFFFFD1DC)
+    val cardFrontColor = if (darkMode) Color(0xFFF3E5F5) else Color(0xFFE0D0E0)
+    val textColor = if (darkMode) Color(0xFFFDF6F0) else Color(0xFF3E3E3E)
+    val buttonTextColor = Color.Black
+
+    // ---- Responsive sizing ----
+    val configuration = LocalConfiguration.current
+    val screenWidth = configuration.screenWidthDp.dp
+    val screenHeight = configuration.screenHeightDp.dp
+    val columns = 3
+    val rows = 3
+    val spacing = 12.dp
+
+    // New: reserve space at bottom so Back button never overlaps tiles
+    val backButtonHeight = 56.dp
+    val extraBottomPadding = backButtonHeight + 32.dp
+
+    val horizontalPadding = 32.dp
+    val verticalPadding = 32.dp + extraBottomPadding
+
+    val maxCardWidth = (screenWidth - horizontalPadding - (spacing * (columns - 1))) / columns
+    val maxCardHeight = (screenHeight - verticalPadding - (spacing * (rows - 1))) / rows
+    val cardSize = minOf(maxCardWidth, maxCardHeight)
+
+    // Flip back unmatched cards after delay
+    if (cardsToFlipBack != null) {
+        LaunchedEffect(cardsToFlipBack) {
+            delay(1000)
+            cards = cards.mapIndexed { i, c ->
+                if (i == cardsToFlipBack!!.first || i == cardsToFlipBack!!.second)
+                    c.copy(isFaceUp = false)
+                else c
+            }
+            firstCardIndex = null
+            secondCardIndex = null
+            cardsToFlipBack = null
+        }
+    }
+
+    val matchedPairs = cards.count { it.isMatched } / 2
+    val celebrationScale = remember { Animatable(0f) }
+
+    // Celebration animation
+    if (matchedPairs == 4) {
+        LaunchedEffect(Unit) {
+            celebrationScale.animateTo(1.5f, animationSpec = tween(300))
+            celebrationScale.animateTo(1f, animationSpec = tween(300))
+            celebrationScale.animateTo(1.3f, animationSpec = tween(200))
+            celebrationScale.animateTo(1f, animationSpec = tween(200))
+            delay(500)
+            onNext()
+        }
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = backgroundColor
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+
+            // Main game layout with extra bottom padding
+            Column(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(bottom = extraBottomPadding),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(spacing)
+            ) {
+                Text(
+                    "Match all of the pairs! 🧩",
+                    color = textColor,
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Spacer(Modifier.height(16.dp))
+
+                Column(verticalArrangement = Arrangement.spacedBy(spacing)) {
+                    for (row in 0 until rows) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(spacing)) {
+                            for (col in 0 until columns) {
+                                val index = row * columns + col
+                                if (index >= cards.size) continue
+                                val card = cards[index]
+
+                                MemoryCardItem(
+                                    card = card,
+                                    cardBackColor = cardBackColor,
+                                    cardFrontColor = cardFrontColor,
+                                    cardSize = cardSize,
+                                    onClick = {
+                                        if (card.isFaceUp || card.isMatched) return@MemoryCardItem
+                                        if (firstCardIndex == null) {
+                                            firstCardIndex = index
+                                            cards = cards.mapIndexed { i, c ->
+                                                if (i == index) c.copy(isFaceUp = true) else c
+                                            }
+                                        } else if (secondCardIndex == null) {
+                                            secondCardIndex = index
+                                            cards = cards.mapIndexed { i, c ->
+                                                if (i == index) c.copy(isFaceUp = true) else c
+                                            }
+                                            val first = firstCardIndex!!
+                                            val second = index
+                                            if (cards[first].emoji == cards[second].emoji) {
+                                                cards = cards.mapIndexed { i, c ->
+                                                    if (i == first || i == second) c.copy(isMatched = true)
+                                                    else c
+                                                }
+                                                firstCardIndex = null
+                                                secondCardIndex = null
+                                            } else {
+                                                cardsToFlipBack = first to second
+                                            }
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Celebration Text
+            if (matchedPairs == 4) {
+                Text(
+                    "Well done! 🎉",
+                    color = textColor,
+                    fontSize = 32.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .scale(celebrationScale.value)
+                )
+            }
+
+            // Back button (fixed spacing, never overlaps grid now)
+            Button(
+                onClick = onBack,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 16.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = cardBackColor)
+            ) {
+                Text("Back", color = buttonTextColor)
+            }
+        }
+    }
+}
+@Composable
+fun MemoryCardItem(
+    card: MemoryCard,
+    cardBackColor: Color,
+    cardFrontColor: Color,
+    cardSize: Dp,
+    onClick: () -> Unit
+) {
+    val rotation = remember { Animatable(0f) }
+
+    LaunchedEffect(card.isFaceUp) {
+        rotation.animateTo(
+            targetValue = if (card.isFaceUp) 180f else 0f,
+            animationSpec = tween(durationMillis = 400)
+        )
+    }
+
+    Box(
+        modifier = Modifier
+            .size(cardSize)
+            .clickable { onClick() }
+            .graphicsLayer {
+                rotationY = rotation.value
+                cameraDistance = 8 * density
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        if (rotation.value <= 90f) {
+            Image(
+                painter = painterResource(id = R.drawable.mindful_moments),
+                contentDescription = "Card Back",
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(RoundedCornerShape(12.dp)),
+                contentScale = ContentScale.Crop
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(cardFrontColor, RoundedCornerShape(12.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(card.emoji, fontSize = cardSize.value.sp / 2)
+            }
+        }
+    }
+}
+
+@Composable
+fun textColor(darkMode: Boolean) =
+    if (darkMode) Color(0xFF3A3A5E) else Color(0xFF3E3E3E)
+
+
+// ---------- FEEDBACK SCREEN ----------
+@Composable
+fun FeedbackField(
+    feedbackText: String,
+    onFeedbackChange: (String) -> Unit,
+    darkMode: Boolean,
+    onSubmit: () -> Unit,
+    onBack: () -> Unit,
+    resetKey: Int
+) {
+
+    var sliderValue by remember { mutableStateOf(2f) }
+    var sliderChosen by remember { mutableStateOf(false) }
+
+    val emojiList = listOf("😔", "😐", "😊", "😄", "🤩")
+
+    // Background colors
+    val backgroundColor = if (darkMode) Color(0xFF3A3A5E) else Color(0xFFFFF0F5)
+
+    // Slider thumb colors by value
+    val thumbColor: Color = when (sliderValue) {
+        in 0f..1f -> if (darkMode) Color(0xFFCC6F6F) else Color(0xFFFF8A80)
+        in 1f..2f -> if (darkMode) Color(0xFFC89A64) else Color(0xFFFFD180)
+        in 2f..3f -> if (darkMode) Color(0xFFBFB76B) else Color(0xFFFFF59D)
+        in 3f..4f -> if (darkMode) Color(0xFF78C78A) else Color(0xFF80E27E)
+        else -> Color.Gray
+    }
+
+    // Slider animation offsets
+    val sliderOffsetY by animateDpAsState(
+        targetValue = if (sliderChosen) (-40).dp else 0.dp,
+        animationSpec = tween(500)
+    )
+    val textFieldAlpha by animateFloatAsState(
+        targetValue = if (sliderChosen) 1f else 0f,
+        animationSpec = tween(500)
+    )
+    val textFieldOffsetY by animateDpAsState(
+        targetValue = if (sliderChosen) 40.dp else 200.dp,
+        animationSpec = tween(500)
+    )
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = backgroundColor
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+
+            // ----- SLIDER AREA -----
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.offset(y = sliderOffsetY)
+            ) {
+                Text(
+                    "How are you feeling now?",
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (darkMode) Color(0xFFFDF6F0) else Color(0xFF3E3E3E)
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Slider(
+                    value = sliderValue,
+                    onValueChange = { sliderValue = it },
+                    onValueChangeFinished = { sliderChosen = true },
+                    valueRange = 0f..4f,
+                    steps = 3,
+                    colors = SliderDefaults.colors(
+                        thumbColor = thumbColor,
+                        activeTrackColor = thumbColor.copy(alpha = 0.6f),
+                        inactiveTrackColor = if (darkMode) Color(0xFF8888AA) else Color.LightGray.copy(alpha = 0.4f)
+                    ),
+                    modifier = Modifier.width(300.dp)
+                )
+
+                // Emoji row
+                Row(
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.width(300.dp)
+                ) {
+                    emojiList.forEachIndexed { index, emoji ->
+                        val scale by animateFloatAsState(
+                            targetValue = if (sliderValue.roundToInt() == index) 1.4f else 1f
+                        )
+                        Text(
+                            emoji,
+                            fontSize = 28.sp,
+                            modifier = Modifier.scale(scale)
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(25.dp))
+
+            // ----- TEXT FIELD + SUBMIT BUTTON -----
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier
+                    .offset(y = textFieldOffsetY)
+                    .alpha(textFieldAlpha)
+            ) {
+                if (sliderChosen) {
+                    OutlinedTextField(
+                        value = feedbackText,
+                        onValueChange = onFeedbackChange,
+                        placeholder = { Text("Type your thoughts here...") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(130.dp),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = if (darkMode) Color.White else Color.Black,
+                            unfocusedTextColor = if (darkMode) Color.White else Color.Black,
+                            cursorColor = if (darkMode) Color(0xFFB39DDB) else Color.Black,
+                            focusedContainerColor = if (darkMode) Color(0xFF2D2D46) else Color(0xFFFFF0F5),
+                            unfocusedContainerColor = if (darkMode) Color(0xFF2D2D46) else Color(0xFFFFF0F5),
+                            focusedPlaceholderColor = Color.LightGray,
+                            unfocusedPlaceholderColor = Color.Gray
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.height(20.dp))
+
+                    Button(
+                        onClick = onSubmit,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (darkMode) Color(0xFF6A5ACD) else Color(0xFFFFD1DC)
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth(0.5f)
+                            .height(50.dp),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Text("Submit", color = Color.Black, fontSize = 18.sp)
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Back Button
+                    Button(
+                        onClick = onBack,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (darkMode) Color(0xFF6A5ACD) else Color(0xFFFFD1DC)
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth(0.5f)
+                            .height(50.dp),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Text("Back", color = Color.Black, fontSize = 18.sp)
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+// ---------- SETTINGS SCREEN ----------
+@Composable
+fun SettingsScreen(darkMode: Boolean, onToggleDarkMode: () -> Unit, onBack: () -> Unit) {
+    val bgColor = if (darkMode) Color(0xFF3A3A5E) else Color(0xFFFFF0F5) // pastel background
+    val txtColor = if (darkMode) Color(0xFFFDF6F0) else Color(0xFF3E3E3E) // soft pastel text
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(bgColor) // solid pastel color
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(32.dp),
+            horizontalAlignment = Alignment.Start,
+            verticalArrangement = Arrangement.Top
+        ) {
+            Text(
+                "Settings ⚙️",
+                fontSize = 32.sp,
+                color = txtColor,
+                fontWeight = FontWeight.Bold
+            )
+
+            Spacer(modifier = Modifier.height(32.dp))
+
+            // Dark Mode Toggle
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onToggleDarkMode() }
+                    .padding(vertical = 16.dp)
+            ) {
+                Text(
+                    "Dark Mode 🌙",
+                    fontSize = 22.sp,
+                    modifier = Modifier.weight(1f),
+                    color = txtColor
+                )
+                Switch(checked = darkMode, onCheckedChange = { onToggleDarkMode() })
+            }
+
+            Spacer(modifier = Modifier.height(48.dp))
+
+            // Back Button
+            Button(
+                onClick = onBack,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (darkMode) Color(0xFF6A5ACD) else Color(0xFFFFD1DC)
+                ),
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text("Back", fontSize = 18.sp, color = Color.White)
+            }
+        }
+    }
+}
+
+
+
+// ---------- Animated sticker reward row ----------
+@Composable
+fun StickerRewardRow(stickers: List<Sticker>) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(12.dp)
+    ) {
+        stickers.forEachIndexed { index, sticker ->
+            PopStickerWithSparkles(sticker = sticker, index = index)
+        }
+    }
+}
+// ---------- CONGRATULATIONS SCREEN ----------
+@Composable
+fun CongratulationsScreen(
+    onBackToStart: () -> Unit,
+    onOpenStickerBook: () -> Unit,
+    darkMode: Boolean,
+    stickers: List<Sticker>
+) {
+    var showTitle by remember { mutableStateOf(false) }
+    var showImage by remember { mutableStateOf(false) }
+    var showSubtitle by remember { mutableStateOf(false) }
+    var showStickers by remember { mutableStateOf(false) }
+    var showButtons by remember { mutableStateOf(false) }
+
+    // Sequential reveal
+    LaunchedEffect(Unit) {
+        delay(200); showTitle = true
+        delay(250); showImage = true
+        delay(200); showSubtitle = true
+        delay(250); showStickers = true
+        delay(300); showButtons = true
+    }
+
+    val bgBrush = Brush.verticalGradient(
+        colors = if (darkMode)
+            listOf(Color(0xFF3A3A5E), Color(0xFF6A5ACD))
+        else
+            listOf(Color(0xFFFFF0F5), Color(0xFFFFD1DC))
+    )
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(bgBrush),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+
+            // ⭐ LARGE “Congratulations!” text
+            AnimatedVisibility(visible = showTitle) {
+                Text(
+                    text = "🎉 Congratulations! 🎉",
+                    fontSize = 40.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = if (darkMode) Color.White else Color(0xFF2E7D32),
+                    textAlign = TextAlign.Center
+                )
+            }
+
+            Spacer(Modifier.height(16.dp))
+
+            // ⭐ SMALL image
+            AnimatedVisibility(visible = showImage) {
+                Image(
+                    painter = painterResource(id = R.drawable.happy_student),
+                    contentDescription = null,
+                    modifier = Modifier
+                        .size(120.dp) // <<< SMALL FIXED SIZE
+                        .clip(RoundedCornerShape(16.dp)),
+                    contentScale = ContentScale.Fit
+                )
+            }
+            // image refrence
+            // Pngtree (2026). Human verification | Pngtree. [online] Available at: https://pngtree.com/freepng/cute-cartoon-school-children-clipart-illustration_16838569.html [Accessed 15th January 2026].
+
+            Spacer(Modifier.height(12.dp))
+
+            // ⭐ Subtitle
+            AnimatedVisibility(visible = showSubtitle) {
+                Text(
+                    text = "These are the stickers you’ve earned!",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (darkMode) Color(0xFFE0E0E0) else Color(0xFF4E342E),
+                    textAlign = TextAlign.Center
+                )
+            }
+
+            Spacer(Modifier.height(20.dp))
+
+            // Sticker reveal row
+            AnimatedVisibility(visible = showStickers) {
+                val showList =
+                    if (stickers.size > 6) stickers.takeLast(6) else stickers
+                StickerRewardRow(showList)  // Your existing animation
+            }
+
+            Spacer(Modifier.height(32.dp))
+
+            AnimatedVisibility(visible = showButtons) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Button(
+                        onClick = onBackToStart,
+                        modifier = Modifier.width(220.dp).height(48.dp)
+                    ) { Text("Back to Home") }
+
+                    Spacer(Modifier.height(12.dp))
+
+                    Button(
+                        onClick = onOpenStickerBook,
+                        modifier = Modifier.width(220.dp).height(48.dp)
+                    ) { Text("📘 Sticker Book") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun PopStickerWithSparkles(sticker: Sticker, index: Int) {
+    var visible by remember { mutableStateOf(false) }
+
+    // stagger reveal
+    LaunchedEffect(Unit) {
+        delay(160L * index)
+        visible = true
+    }
+
+    // BIG noticeable pop
+    val scale by animateFloatAsState(
+        targetValue = if (visible) 1f else 0f,
+        animationSpec = spring(
+            dampingRatio = 0.35f,      // Strong overshoot
+            stiffness = Spring.StiffnessVeryLow
+        ),
+        label = ""
+    )
+
+    // Slide upward entrance
+    val offsetY by animateDpAsState(
+        targetValue = if (visible) 0.dp else 40.dp,
+        animationSpec = tween(650, easing = LinearOutSlowInEasing),
+        label = ""
+    )
+
+    // Subtle rotation for extra “pop”
+    val rotation by animateFloatAsState(
+        targetValue = if (visible) 0f else -35f,
+        animationSpec = tween(600, easing = LinearOutSlowInEasing),
+        label = ""
+    )
+
+    Box(
+        modifier = Modifier
+            .offset(y = offsetY)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+                rotationZ = rotation
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        if (visible) SparkleBurst()
+        EmojiSticker(sticker)
+    }
+}
+
+
+@Composable
+fun EmojiSticker(sticker: Sticker) {
+    Box(
+        modifier = Modifier
+            .size(
+                when (sticker.rarity) {
+                    Rarity.COMMON -> 80.dp
+                    Rarity.RARE -> 92.dp
+                    Rarity.EPIC -> 105.dp
+                }
+            )
+            .clip(RoundedCornerShape(20.dp))
+            .background(sticker.rarity.color.copy(alpha = 0.18f))
+            .border(5.dp, sticker.rarity.color, RoundedCornerShape(20.dp)),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = sticker.emoji,
+            fontSize = when (sticker.rarity) {
+                Rarity.COMMON -> 36.sp
+                Rarity.RARE -> 42.sp
+                Rarity.EPIC -> 48.sp
+            }
+        )
+    }
+}
+
+@Composable
+fun SparkleBurst() {
+    val sparkles = remember {
+        List(10) {
+            val angle = Random.nextDouble(0.0, 360.0)
+            val dist = Random.nextDouble(35.0, 70.0)
+            val size = Random.nextInt(10, 20)
+            Triple(angle, dist, size)
+        }
+    }
+
+    sparkles.forEachIndexed { idx, (angle, dist, size) ->
+        var show by remember { mutableStateOf(true) }
+        val anim = remember { Animatable(0f) }
+
+        LaunchedEffect(Unit) {
+            anim.animateTo(
+                targetValue = 1f,
+                animationSpec = tween(
+                    durationMillis = 850 + idx * 50,
+                    easing = FastOutSlowInEasing
+                )
+            )
+            show = false
+        }
+
+        if (show) {
+            val x = (cos(Math.toRadians(angle)) * dist).dp
+            val y = (sin(Math.toRadians(angle)) * dist).dp
+            val alpha = 1f - anim.value
+
+            Box(
+                modifier = Modifier
+                    .offset(x = x * anim.value, y = y * anim.value)
+                    .size(size.dp)
+                    .background(
+                        color = if (alpha > 0f) Color.White.copy(alpha = alpha) else Color.Transparent,
+                        shape = CircleShape
+                    )
+            )
+        }
+    }
+}
+
+@Composable
+fun StickerCard(sticker: Sticker, count: Int, darkMode: Boolean, onClick: () -> Unit) {
+    val bg = sticker.rarity.color.copy(alpha = if (darkMode) 0.22f else 0.12f)
+    val shadowColor = sticker.rarity.color.copy(alpha = 0.35f)
+
+    Box(
+        modifier = Modifier
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(16.dp))
+            .background(bg)
+            .clickable { onClick() }
+            .border(3.dp, sticker.rarity.color, RoundedCornerShape(16.dp))
+            .shadow(10.dp, RoundedCornerShape(16.dp), ambientColor = shadowColor)
+            .padding(8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(sticker.emoji, fontSize = 42.sp)
+            Text(sticker.rarity.displayName, fontSize = 12.sp, color = sticker.rarity.color)
+        }
+    }
+}
+
+// ------ sticker book ----- //
+
+@Composable
+fun StickerPopup(sticker: Sticker, onDismiss: () -> Unit, darkMode: Boolean) {
+    var visible by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { visible = true }
+
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn() + scaleIn(),
+        exit = fadeOut() + scaleOut()
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.6f))
+                .clickable { onDismiss() },
+            contentAlignment = Alignment.Center
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(220.dp)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(if (darkMode) Color(0xFF3A0CA3) else Color.White)
+                    .padding(16.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(sticker.emoji, fontSize = 80.sp)
+                    Text(sticker.rarity.displayName, fontSize = 20.sp, color = if (darkMode) Color.White else Color.Black)
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalAnimationApi::class)
+@Composable
+fun StickerBookScreen(
+    allStickers: List<Sticker>,
+    onBack: () -> Unit,
+    darkMode: Boolean
+) {
+    val pageSize = 9
+    val totalPages = maxOf(1, (allStickers.size + pageSize - 1) / pageSize)
+    var page by remember { mutableStateOf(0) }
+    var selectedSticker by remember { mutableStateOf<Sticker?>(null) }
+
+    // ---- Theme-consistent colors ----
+    val backgroundColor = if (darkMode) Color(0xFF3A3A5E) else Color(0xFFFFF0F5)
+    val textColor = if (darkMode) Color(0xFFFDF6F0) else Color(0xFF3E3E3E)
+    val secondaryText = if (darkMode) Color(0xFFB39DDB) else Color(0xFF6D4C41)
+    val buttonColor = if (darkMode) Color(0xFF6A5ACD) else Color(0xFFFFD1DC)
+    val trackColor = if (darkMode) Color(0xFF2D2D46) else Color(0xFFFFF0F5)
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(backgroundColor)
+            .padding(16.dp)
+    ) {
+
+        Text(
+            "📘 My Sticker Book",
+            fontSize = 28.sp,
+            fontWeight = FontWeight.Bold,
+            color = textColor,
+            modifier = Modifier.align(Alignment.CenterHorizontally)
+        )
+
+        Spacer(Modifier.height(8.dp))
+
+        val uniqueStickers = allStickers.map { it.emoji }.distinct().size
+        val progress = uniqueStickers.toFloat() / uniqueStickers.toFloat() // always 100%
+
+        LinearProgressIndicator(
+            progress = progress,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(10.dp)
+                .clip(RoundedCornerShape(12.dp)),
+            color = buttonColor,
+            trackColor = trackColor
+        )
+
+        Spacer(Modifier.height(6.dp))
+
+        Text(
+            "Collection Complete",
+            fontSize = 14.sp,
+            color = secondaryText,
+            modifier = Modifier.align(Alignment.CenterHorizontally)
+        )
+
+        Spacer(Modifier.height(14.dp))
+
+        AnimatedContent(
+            targetState = page,
+            transitionSpec = {
+                if (targetState > initialState) {
+                    slideInHorizontally { width -> width } + fadeIn() with
+                            slideOutHorizontally { width -> -width } + fadeOut()
+                } else {
+                    slideInHorizontally { width -> -width } + fadeIn() with
+                            slideOutHorizontally { width -> width } + fadeOut()
+                }.using(SizeTransform(clip = false))
+            }
+        ) { targetPage ->
+            val slice = allStickers.drop(targetPage * pageSize).take(pageSize)
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(3),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(520.dp),
+                contentPadding = PaddingValues(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                items(slice.size) { i ->
+                    val s = slice[i]
+                    StickerCard(sticker = s, count = 1, darkMode = darkMode) {
+                        selectedSticker = s
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Button(
+                onClick = { if (page > 0) page-- },
+                enabled = page > 0,
+                colors = ButtonDefaults.buttonColors(containerColor = buttonColor)
+            ) { Text("Prev", color = Color.Black) }
+
+            Text(
+                "Page ${page + 1} / $totalPages",
+                color = textColor,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.align(Alignment.CenterVertically)
+            )
+
+            Button(
+                onClick = { if (page < totalPages - 1) page++ },
+                enabled = page < totalPages - 1,
+                colors = ButtonDefaults.buttonColors(containerColor = buttonColor)
+            ) { Text("Next", color = Color.Black) }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        Button(
+            onClick = onBack,
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(containerColor = buttonColor)
+        ) { Text("Back", color = Color.Black) }
+    }
+
+    selectedSticker?.let { sticker ->
+        StickerPopup(sticker = sticker, onDismiss = { selectedSticker = null }, darkMode)
+    }
+}
